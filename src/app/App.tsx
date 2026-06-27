@@ -129,16 +129,15 @@ class AudioEngine {
   constructor() { this.ctx = null; this.nodes = {}; this.active = null; }
 
   // ── FIX #1 — unlock AudioContext on mobile via user gesture
-  unlock() {
-    if (!this.ctx) this.ctx = new (window.AudioContext || window.webkitAudioContext)();
-    if (this.ctx.state === "suspended") this.ctx.resume();
-    // Tiny silent buffer to unlock iOS
-    const buf = this.ctx.createBuffer(1, 1, 22050);
-    const src = this.ctx.createBufferSource();
-    src.buffer = buf;
-    src.connect(this.ctx.destination);
-    src.start(0);
-  }
+unlock() {
+  if (!this.ctx) this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+  if (this.ctx.state !== "running") this.ctx.resume();
+  const buf = this.ctx.createBuffer(1, 1, 22050);
+  const src = this.ctx.createBufferSource();
+  src.buffer = buf;
+  src.connect(this.ctx.destination);
+  src.start(0);
+}
 
   _noise(hipass = 0, lopass = 22000, gain = 0.25) {
     const buf  = this.ctx.createBuffer(1, this.ctx.sampleRate * 3, this.ctx.sampleRate);
@@ -178,14 +177,13 @@ class AudioEngine {
     return { interval:iv, masterGain:master };
   }
 
-  play(id) {
-    if (!this.ctx) this.unlock();
-    this.stop(); this.active = id;
-    if (id === "rain")       this.nodes = this._noise(900,  7000, 0.30);
-    if (id === "whitenoise") this.nodes = this._noise(20,  20000, 0.18);
-    if (id === "lofi")       this.nodes = this._lofi();
-  }
-
+play(id) {
+  this.unlock(); // ← toujours appelé, plus de "if (!this.ctx)"
+  this.stop(); this.active = id;
+  if (id === "rain")       this.nodes = this._noise(900,  7000, 0.30);
+  if (id === "whitenoise") this.nodes = this._noise(20,  20000, 0.18);
+  if (id === "lofi")       this.nodes = this._lofi();
+}
   stop() {
     try {
       this.nodes.source?.stop();
@@ -203,7 +201,7 @@ class AudioEngine {
 
   // ── FIX #3 — completion chime (3 ascending sine tones)
   playChime() {
-    if (!this.ctx) this.unlock();
+     this.unlock();
     const freqs = [523.25, 659.25, 783.99]; // C5 E5 G5
     freqs.forEach((freq, i) => {
       const osc = this.ctx.createOscillator();
@@ -220,7 +218,7 @@ class AudioEngine {
 
   // Break-end chime (softer, descending)
   playBreakChime() {
-    if (!this.ctx) this.unlock();
+    this.unlock();
     const freqs = [783.99, 659.25, 523.25];
     freqs.forEach((freq, i) => {
       const osc = this.ctx.createOscillator();
