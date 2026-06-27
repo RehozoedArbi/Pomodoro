@@ -1286,7 +1286,7 @@ const commitSession = async (status, forceMins) => {
               </div>
               <p style={{ fontSize:13, color:tk.muted, lineHeight:1.8 }}>{t.breakCopy}</p>
             </div>
-            <a href="#" style={{ display:"flex", alignItems:"center", justifyContent:"center", gap:8, padding:"14px", borderRadius:14, textDecoration:"none", background:`linear-gradient(135deg,${GREEN},#059669)`, color:"#f0fdf4", fontSize:13, fontWeight:600, boxShadow:"0 0 0 1px rgba(16,185,129,0.25),0 0 28px rgba(16,185,129,0.25)" }}>
+            <a href="https://drehozoe.web.app/" style={{ display:"flex", alignItems:"center", justifyContent:"center", gap:8, padding:"14px", borderRadius:14, textDecoration:"none", background:`linear-gradient(135deg,${GREEN},#059669)`, color:"#f0fdf4", fontSize:13, fontWeight:600, boxShadow:"0 0 0 1px rgba(16,185,129,0.25),0 0 28px rgba(16,185,129,0.25)" }}>
               {t.portfolio}<ExternalLink size={13}/>
             </a>
           </div>
