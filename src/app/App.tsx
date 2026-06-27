@@ -128,16 +128,17 @@ const idb = {
 class AudioEngine {
   constructor() { this.ctx = null; this.nodes = {}; this.active = null; }
 
-  // ── FIX #1 — unlock AudioContext on mobile via user gesture
-unlock() {
-  if (!this.ctx) this.ctx = new (window.AudioContext || window.webkitAudioContext)();
-  if (this.ctx.state !== "running") this.ctx.resume();
-  const buf = this.ctx.createBuffer(1, 1, 22050);
-  const src = this.ctx.createBufferSource();
-  src.buffer = buf;
-  src.connect(this.ctx.destination);
-  src.start(0);
-}
+  // Retourne une Promise qui se résout seulement quand le contexte tourne vraiment
+  unlock() {
+    if (!this.ctx) this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const buf = this.ctx.createBuffer(1, 1, 22050);
+    const src = this.ctx.createBufferSource();
+    src.buffer = buf;
+    src.connect(this.ctx.destination);
+    src.start(0);
+    if (this.ctx.state === "running") return Promise.resolve(this.ctx);
+    return this.ctx.resume().then(() => this.ctx).catch(() => this.ctx);
+  }
 
   _noise(hipass = 0, lopass = 22000, gain = 0.25) {
     const buf  = this.ctx.createBuffer(1, this.ctx.sampleRate * 3, this.ctx.sampleRate);
@@ -177,13 +178,15 @@ unlock() {
     return { interval:iv, masterGain:master };
   }
 
-play(id) {
-  this.unlock(); // ← toujours appelé, plus de "if (!this.ctx)"
-  this.stop(); this.active = id;
-  if (id === "rain")       this.nodes = this._noise(900,  7000, 0.30);
-  if (id === "whitenoise") this.nodes = this._noise(20,  20000, 0.18);
-  if (id === "lofi")       this.nodes = this._lofi();
-}
+  play(id) {
+    this.unlock().then(() => {
+      this.stop(); this.active = id;
+      if (id === "rain")       this.nodes = this._noise(900,  7000, 0.30);
+      if (id === "whitenoise") this.nodes = this._noise(20,  20000, 0.18);
+      if (id === "lofi")       this.nodes = this._lofi();
+    });
+  }
+
   stop() {
     try {
       this.nodes.source?.stop();
@@ -199,40 +202,41 @@ play(id) {
     if (g) g.gain.value = v;
   }
 
-  // ── FIX #3 — completion chime (3 ascending sine tones)
   playChime() {
-     this.unlock();
-    const freqs = [523.25, 659.25, 783.99]; // C5 E5 G5
-    freqs.forEach((freq, i) => {
-      const osc = this.ctx.createOscillator();
-      const g   = this.ctx.createGain();
-      osc.type = "sine"; osc.frequency.value = freq;
-      g.gain.setValueAtTime(0, this.ctx.currentTime + i * 0.22);
-      g.gain.linearRampToValueAtTime(0.32, this.ctx.currentTime + i * 0.22 + 0.05);
-      g.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + i * 0.22 + 1.2);
-      osc.connect(g); g.connect(this.ctx.destination);
-      osc.start(this.ctx.currentTime + i * 0.22);
-      osc.stop(this.ctx.currentTime + i * 0.22 + 1.2);
+    this.unlock().then(() => {
+      const freqs = [523.25, 659.25, 783.99];
+      freqs.forEach((freq, i) => {
+        const osc = this.ctx.createOscillator();
+        const g   = this.ctx.createGain();
+        osc.type = "sine"; osc.frequency.value = freq;
+        g.gain.setValueAtTime(0, this.ctx.currentTime + i * 0.22);
+        g.gain.linearRampToValueAtTime(0.32, this.ctx.currentTime + i * 0.22 + 0.05);
+        g.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + i * 0.22 + 1.2);
+        osc.connect(g); g.connect(this.ctx.destination);
+        osc.start(this.ctx.currentTime + i * 0.22);
+        osc.stop(this.ctx.currentTime + i * 0.22 + 1.2);
+      });
     });
   }
 
-  // Break-end chime (softer, descending)
   playBreakChime() {
-    this.unlock();
-    const freqs = [783.99, 659.25, 523.25];
-    freqs.forEach((freq, i) => {
-      const osc = this.ctx.createOscillator();
-      const g   = this.ctx.createGain();
-      osc.type = "triangle"; osc.frequency.value = freq;
-      g.gain.setValueAtTime(0, this.ctx.currentTime + i * 0.20);
-      g.gain.linearRampToValueAtTime(0.22, this.ctx.currentTime + i * 0.20 + 0.05);
-      g.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + i * 0.20 + 1.0);
-      osc.connect(g); g.connect(this.ctx.destination);
-      osc.start(this.ctx.currentTime + i * 0.20);
-      osc.stop(this.ctx.currentTime + i * 0.20 + 1.0);
+    this.unlock().then(() => {
+      const freqs = [783.99, 659.25, 523.25];
+      freqs.forEach((freq, i) => {
+        const osc = this.ctx.createOscillator();
+        const g   = this.ctx.createGain();
+        osc.type = "triangle"; osc.frequency.value = freq;
+        g.gain.setValueAtTime(0, this.ctx.currentTime + i * 0.20);
+        g.gain.linearRampToValueAtTime(0.22, this.ctx.currentTime + i * 0.20 + 0.05);
+        g.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + i * 0.20 + 1.0);
+        osc.connect(g); g.connect(this.ctx.destination);
+        osc.start(this.ctx.currentTime + i * 0.20);
+        osc.stop(this.ctx.currentTime + i * 0.20 + 1.0);
+      });
     });
   }
 }
+
 const audio = new AudioEngine();
 
 // ─────────────────────────────────────────────
