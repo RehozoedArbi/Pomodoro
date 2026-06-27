@@ -276,7 +276,7 @@ const TK = {
 // ─────────────────────────────────────────────
 const T = {
   en: {
-    app:"AuraFocus", focus:"Focus", brk:"Break", stats:"Stats",
+    app:"AxisFocus", focus:"Focus", brk:"Break", stats:"Stats",
     sessions:"sessions", placeholder:"What will you focus on?",
     hint:"Enter a task to start", focusing:"focusing", ready:"ready",
     sound:"Soundscape", playing:"playing", rain:"Rain", noise:"Noise", lofi:"Lofi", silence:"Off",
@@ -324,7 +324,7 @@ const T = {
     breakComplete:"Break over — back to focus!",
   },
   fr: {
-    app:"AuraFocus", focus:"Focus", brk:"Pause", stats:"Stats",
+    app:"AxisFocus", focus:"Focus", brk:"Pause", stats:"Stats",
     sessions:"séances", placeholder:"Sur quoi allez-vous vous concentrer ?",
     hint:"Entrez une tâche pour commencer", focusing:"en cours", ready:"prêt",
     sound:"Ambiance", playing:"lecture", rain:"Pluie", noise:"Bruit blanc", lofi:"Lofi", silence:"Silence",
