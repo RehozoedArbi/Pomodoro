@@ -17,46 +17,67 @@ import {
 // ─────────────────────────────────────────────
 const SUPABASE_URL  = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_ANON = import.meta.env.VITE_SUPABASE_ANON_KEY;
-console.log(SUPABASE_URL)
+
+// ─────────────────────────────────────────────
+// FIX #4 — Site URL dynamique (fini le localhost en prod)
+// On lit l'URL de la page courante pour que Supabase redirige
+// vers le bon domaine (vercel, localhost, peu importe).
+// ─────────────────────────────────────────────
+const SITE_URL = typeof window !== "undefined"
+  ? `${window.location.protocol}//${window.location.host}`
+  : "http://localhost:5173";
+
 // ─────────────────────────────────────────────
 // SUPABASE CLIENT (fetch natif, sans SDK)
 // ─────────────────────────────────────────────
 const sb = {
-  h: (token) => ({
+  h: (token?: string | null) => ({
     "Content-Type":  "application/json",
     "apikey":        SUPABASE_ANON,
     "Authorization": `Bearer ${token || SUPABASE_ANON}`,
   }),
-  async signUp(email, password) {
+  async signUp(email: string, password: string) {
     const r = await fetch(`${SUPABASE_URL}/auth/v1/signup`, {
-      method: "POST", headers: this.h(), body: JSON.stringify({ email, password }),
+      method: "POST",
+      headers: this.h(),
+      // FIX #4 — passe le redirect URL à l'inscription
+      body: JSON.stringify({ email, password, options: { emailRedirectTo: SITE_URL } }),
     });
     return r.json();
   },
-  async signIn(email, password) {
+  async signIn(email: string, password: string) {
     const r = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=password`, {
       method: "POST", headers: this.h(), body: JSON.stringify({ email, password }),
     });
     return r.json();
   },
-  async signOut(token) {
+  async signOut(token: string) {
     await fetch(`${SUPABASE_URL}/auth/v1/logout`, { method:"POST", headers: this.h(token) });
   },
-  async upsertSession(token, session) {
+  async recover(email: string) {
+    // FIX #4 — passe le redirect URL à la récupération de mot de passe
+    const r = await fetch(`${SUPABASE_URL}/auth/v1/recover`, {
+      method: "POST",
+      headers: this.h(),
+      body: JSON.stringify({ email, options: { emailRedirectTo: SITE_URL } }),
+    });
+    return r.json();
+  },
+  async upsertSession(token: string, session: object) {
     await fetch(`${SUPABASE_URL}/rest/v1/focus_sessions`, {
       method: "POST",
       headers: { ...this.h(token), "Prefer": "resolution=merge-duplicates" },
       body: JSON.stringify(session),
     });
   },
-  async getSessions(token, userId) {
+  async getSessions(token: string, userId: string) {
     const r = await fetch(
       `${SUPABASE_URL}/rest/v1/focus_sessions?user_id=eq.${userId}&order=completed_at.desc&limit=50`,
       { headers: this.h(token) }
     );
     return r.json();
   },
-  async upsertSettings(token, settings) {
+  async upsertSettings(token: string, settings: object) {
     await fetch(`${SUPABASE_URL}/rest/v1/user_settings`, {
       method: "POST",
       headers: { ...this.h(token), "Prefer": "resolution=merge-duplicates" },
@@ -69,9 +90,9 @@ const sb = {
 // INDEXEDDB
 // ─────────────────────────────────────────────
 function openDB() {
-  return new Promise((res, rej) => {
+  return new Promise<IDBDatabase>((res, rej) => {
     const req = indexedDB.open("aurafocus", 1);
-    req.onupgradeneeded = (e) => {
+    req.onupgradeneeded = (e: any) => {
       const db = e.target.result;
       if (!db.objectStoreNames.contains("sessions")) {
         const s = db.createObjectStore("sessions", { keyPath:"id" });
@@ -80,41 +101,41 @@ function openDB() {
       if (!db.objectStoreNames.contains("kv"))
         db.createObjectStore("kv", { keyPath:"k" });
     };
-    req.onsuccess = (e) => res(e.target.result);
+    req.onsuccess = (e: any) => res(e.target.result);
     req.onerror   = () => rej(req.error);
   });
 }
 const idb = {
-  async put(store, val) {
+  async put(store: string, val: object) {
     const db  = await openDB();
-    return new Promise((res) => {
+    return new Promise<void>((res) => {
       const tx  = db.transaction(store,"readwrite");
       tx.objectStore(store).put(val);
-      tx.oncomplete = res;
+      tx.oncomplete = () => res();
     });
   },
-  async get(store, key) {
+  async get(store: string, key: string) {
     const db  = await openDB();
-    return new Promise((res) => {
+    return new Promise<any>((res) => {
       const req = db.transaction(store,"readonly").objectStore(store).get(key);
       req.onsuccess = () => res(req.result ?? null);
       req.onerror   = () => res(null);
     });
   },
-  async getAll(store) {
+  async getAll(store: string) {
     const db  = await openDB();
-    return new Promise((res) => {
+    return new Promise<any[]>((res) => {
       const req = db.transaction(store,"readonly").objectStore(store).getAll();
       req.onsuccess = () => res(req.result ?? []);
       req.onerror   = () => res([]);
     });
   },
-  async setKV(k, v) { await this.put("kv", { k, v }); },
-  async getKV(k) { const r = await this.get("kv", k); return r?.v ?? null; },
-  async saveSession(s) { await this.put("sessions", s); },
+  async setKV(k: string, v: any) { await this.put("kv", { k, v }); },
+  async getKV(k: string) { const r = await this.get("kv", k); return r?.v ?? null; },
+  async saveSession(s: object) { await this.put("sessions", s); },
   async allSessions() {
     const all = await this.getAll("sessions");
-    return all.sort((a,b) => new Date(b.completed_at)-new Date(a.completed_at));
+    return all.sort((a,b) => new Date(b.completed_at).getTime()-new Date(a.completed_at).getTime());
   },
 };
 
@@ -122,33 +143,36 @@ const idb = {
 // WEB AUDIO ENGINE
 // ─────────────────────────────────────────────
 class AudioEngine {
-  constructor() { this.ctx=null; this.nodes={}; this.active=null; }
+  ctx: AudioContext | null = null;
+  nodes: any = {};
+  active: string | null = null;
+
   _init() {
-    if (!this.ctx) this.ctx = new (window.AudioContext||window.webkitAudioContext)();
+    if (!this.ctx) this.ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
     if (this.ctx.state==="suspended") this.ctx.resume();
   }
   _noise(hipass=0, lopass=22000, gain=0.25) {
-    const buf  = this.ctx.createBuffer(1, this.ctx.sampleRate*3, this.ctx.sampleRate);
+    const buf  = this.ctx!.createBuffer(1, this.ctx!.sampleRate*3, this.ctx!.sampleRate);
     const data = buf.getChannelData(0);
     for (let i=0; i<data.length; i++) data[i]=Math.random()*2-1;
-    const src  = this.ctx.createBufferSource();
+    const src  = this.ctx!.createBufferSource();
     src.buffer = buf; src.loop = true;
-    const hp   = this.ctx.createBiquadFilter(); hp.type="highpass"; hp.frequency.value=hipass;
-    const lp   = this.ctx.createBiquadFilter(); lp.type="lowpass";  lp.frequency.value=lopass;
-    const g    = this.ctx.createGain(); g.gain.value=gain;
-    src.connect(hp); hp.connect(lp); lp.connect(g); g.connect(this.ctx.destination);
+    const hp   = this.ctx!.createBiquadFilter(); hp.type="highpass"; hp.frequency.value=hipass;
+    const lp   = this.ctx!.createBiquadFilter(); lp.type="lowpass";  lp.frequency.value=lopass;
+    const g    = this.ctx!.createGain(); g.gain.value=gain;
+    src.connect(hp); hp.connect(lp); lp.connect(g); g.connect(this.ctx!.destination);
     src.start();
     return { source:src, gainNode:g };
   }
   _lofi() {
-    const master = this.ctx.createGain(); master.gain.value=0.10;
-    master.connect(this.ctx.destination);
-    const convBuf = this.ctx.createBuffer(2, this.ctx.sampleRate*2, this.ctx.sampleRate);
+    const master = this.ctx!.createGain(); master.gain.value=0.10;
+    master.connect(this.ctx!.destination);
+    const convBuf = this.ctx!.createBuffer(2, this.ctx!.sampleRate*2, this.ctx!.sampleRate);
     for (let c=0;c<2;c++) {
       const ch=convBuf.getChannelData(c);
       for (let i=0;i<ch.length;i++) ch[i]=(Math.random()*2-1)*Math.pow(1-i/ch.length,2.5);
     }
-    const conv=this.ctx.createConvolver(); conv.buffer=convBuf; conv.connect(master);
+    const conv=this.ctx!.createConvolver(); conv.buffer=convBuf; conv.connect(master);
     const CHORD=[130.81,164.81,196.00,246.94,261.63];
     let tick=0;
     const iv=setInterval(()=>{
@@ -163,7 +187,7 @@ class AudioEngine {
     },2200);
     return { interval:iv, masterGain:master };
   }
-  play(id) {
+  play(id: string) {
     this._init(); this.stop(); this.active=id;
     if (id==="rain")       this.nodes=this._noise(900,7000,0.30);
     if (id==="whitenoise") this.nodes=this._noise(20,20000,0.18);
@@ -178,7 +202,7 @@ class AudioEngine {
     } catch(_){}
     this.nodes={}; this.active=null;
   }
-  setVolume(v) {
+  setVolume(v: number) {
     const g=this.nodes.gainNode||this.nodes.masterGain;
     if (g) g.gain.value=v;
   }
@@ -308,13 +332,13 @@ const DAYS = {
   fr:["Lun","Mar","Mer","Jeu","Ven","Sam","Dim"],
 };
 
-function fmt(s) { return `${String(Math.floor(s/60)).padStart(2,"0")}:${String(s%60).padStart(2,"0")}`; }
+function fmt(s: number) { return `${String(Math.floor(s/60)).padStart(2,"0")}:${String(s%60).padStart(2,"0")}`; }
 function uid() { return crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2); }
 
 // ─────────────────────────────────────────────
 // TOAST
 // ─────────────────────────────────────────────
-function Toasts({ list }) {
+function Toasts({ list }: { list: any[] }) {
   return (
     <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[60] flex flex-col items-center gap-2 pointer-events-none">
       {list.map(t => (
@@ -338,7 +362,7 @@ function Toasts({ list }) {
 // ─────────────────────────────────────────────
 // MOBILE MENU
 // ─────────────────────────────────────────────
-function MobileMenu({ open, onClose, mode, switchMode, theme, setTheme, lang, setLang, user, setShowCloud, tk, t }) {
+function MobileMenu({ open, onClose, mode, switchMode, theme, setTheme, lang, setLang, user, setShowCloud, tk, t }: any) {
   if (!open) return null;
   return (
     <>
@@ -348,41 +372,34 @@ function MobileMenu({ open, onClose, mode, switchMode, theme, setTheme, lang, se
         boxShadow:"-20px 0 60px rgba(0,0,0,0.4)",
         animation:"menuSlide 0.25s cubic-bezier(0.16,1,0.3,1)",
       }}>
-        {/* Close */}
         <div className="flex items-center justify-between px-5 pt-5 pb-4" style={{ borderBottom:`1px solid ${tk.divider}` }}>
           <span style={{ fontSize:13, fontWeight:600, letterSpacing:"0.15em", color:tk.muted, textTransform:"uppercase" }}>Menu</span>
           <button onClick={onClose} style={{ width:28, height:28, borderRadius:"50%", display:"flex", alignItems:"center", justifyContent:"center", background:tk.card, border:`1px solid ${tk.border}`, color:tk.muted, cursor:"pointer" }}>
             <X size={13}/>
           </button>
         </div>
-
-        {/* Nav items */}
         <div className="flex flex-col gap-1 px-3 py-4">
           {[["focus",t.focus],["break",t.brk],["stats",t.stats]].map(([m,label]) => (
             <button key={m} onClick={() => { switchMode(m); onClose(); }} style={{
               display:"flex", alignItems:"center", gap:12, padding:"11px 14px", borderRadius:12,
               background: mode===m?"rgba(249,115,22,0.1)":"transparent",
               border: mode===m?"1px solid rgba(249,115,22,0.2)":"1px solid transparent",
-              color: mode===m?ORANGE:tk.muted, fontSize:13, fontWeight:500, cursor:"pointer",
-              textAlign:"left",
+              color: mode===m?ORANGE:tk.muted, fontSize:13, fontWeight:500, cursor:"pointer", textAlign:"left",
             }}>
               <span style={{ width:6, height:6, borderRadius:"50%", background: mode===m?ORANGE:tk.subtle, flexShrink:0 }}/>
               {label}
             </button>
           ))}
         </div>
-
         <div style={{ borderTop:`1px solid ${tk.divider}`, margin:"0 12px" }}/>
-
-        {/* Controls */}
         <div className="flex flex-col gap-2 px-3 py-4">
-          <button onClick={() => setLang(l => l==="en"?"fr":"en")} style={{
+          <button onClick={() => setLang((l: string) => l==="en"?"fr":"en")} style={{
             display:"flex", alignItems:"center", gap:10, padding:"10px 14px", borderRadius:12,
             background:tk.card, border:`1px solid ${tk.border}`, color:tk.muted, fontSize:13, fontWeight:500, cursor:"pointer",
           }}>
             <Globe size={14}/>{lang==="en"?"Français":"English"}
           </button>
-          <button onClick={() => setTheme(x => x==="dark"?"light":"dark")} style={{
+          <button onClick={() => setTheme((x: string) => x==="dark"?"light":"dark")} style={{
             display:"flex", alignItems:"center", gap:10, padding:"10px 14px", borderRadius:12,
             background:tk.card, border:`1px solid ${tk.border}`, color:tk.muted, fontSize:13, fontWeight:500, cursor:"pointer",
           }}>
@@ -407,18 +424,11 @@ function MobileMenu({ open, onClose, mode, switchMode, theme, setTheme, lang, se
 // ─────────────────────────────────────────────
 // CLOUD MODAL
 // ─────────────────────────────────────────────
-// ─────────────────────────────────────────────
-// CLOUD MODAL — v2 (forgot / reset / change-pass / delete)
-// ─────────────────────────────────────────────
-
 type CloudView =
   | "signup" | "signin" | "confirm"
   | "forgot" | "confirm-forgot"
   | "reset"  | "user"
   | "change-pass" | "delete";
-
-const MODAL_META: Record<string, { icon: React.ReactNode; title: string; sub: string }> = {};
-
 
 function CloudModal({
   onClose, t, tk, onAuth, user, token, recoveryToken, lang,
@@ -464,13 +474,13 @@ function CloudModal({
     return r.json();
   };
 
-  // ── Handlers
   const handleSignup = async () => {
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { setErr(t.invalidEmail); return; }
     if (pass.length < 6) { setErr(t.minChars); return; }
     setErr(""); setLoading(true);
     try {
-      const data = await supaPost("/signup", { email, password: pass });
+      // FIX #4 — emailRedirectTo vers le bon domaine
+      const data = await supaPost("/signup", { email, password: pass, options: { emailRedirectTo: SITE_URL } });
       if (data.access_token) { onAuth(data); onClose(); return; }
       const msg = data.msg || data.error_description || data.message || "";
       if (msg.toLowerCase().includes("already")) setErr(t.alreadyRegistered);
@@ -499,13 +509,13 @@ function CloudModal({
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { setErr(t.invalidEmail); return; }
     setErr(""); setLoading(true);
     try {
-      await supaPost("/recover", { email });
+      // FIX #4 — emailRedirectTo vers le bon domaine
+      await supaPost("/recover", { email, options: { emailRedirectTo: SITE_URL } });
       go("confirm-forgot");
     } catch { setErr(t.serverError); }
     setLoading(false);
   };
 
-  // Appelé sur la vue "reset" — utilise le token de récupération issu du lien e-mail
   const handleReset = async () => {
     if (pass.length < 6) { setErr(t.minChars); return; }
     if (pass !== pass2)  { setErr(lang === "fr" ? "Les mots de passe ne correspondent pas." : "Passwords don't match."); return; }
@@ -523,55 +533,49 @@ function CloudModal({
     setLoading(false);
   };
 
- const handleChangePass = async () => {
-  if (pass.length < 6) { setErr(t.minChars); return; }
-  if (pass !== pass2)  { setErr(lang === "fr" ? "Les mots de passe ne correspondent pas." : "Passwords don't match."); return; }
-  if (!token || !user) { setErr(lang === "fr" ? "Non connecté." : "Not signed in."); return; }
-  setErr(""); setLoading(true);
-  try {
-    // 1. Vérifie le mot de passe ACTUEL en tentant une connexion avec
-    const verify = await supaPost("/token?grant_type=password", { email: user.email, password: curPass });
-    if (!verify.access_token) {
-      setErr(lang === "fr" ? "Mot de passe actuel incorrect." : "Current password is incorrect.");
-      setLoading(false);
-      return;
-    }
-    // 2. Mot de passe actuel confirmé → on peut changer le mot de passe
-    const data = await supaPut("/user", { password: pass }, token);
-    if (data.id) { setOk(lang === "fr" ? "Mot de passe mis à jour !" : "Password updated!"); setTimeout(() => go("user"), 1600); }
-    else setErr(data.msg || data.error_description || (lang === "fr" ? "Erreur" : "Error"));
-  } catch { setErr(t.serverError); }
-  setLoading(false);
-};
+  const handleChangePass = async () => {
+    if (pass.length < 6) { setErr(t.minChars); return; }
+    if (pass !== pass2)  { setErr(lang === "fr" ? "Les mots de passe ne correspondent pas." : "Passwords don't match."); return; }
+    if (!token || !user) { setErr(lang === "fr" ? "Non connecté." : "Not signed in."); return; }
+    setErr(""); setLoading(true);
+    try {
+      const verify = await supaPost("/token?grant_type=password", { email: user.email, password: curPass });
+      if (!verify.access_token) {
+        setErr(lang === "fr" ? "Mot de passe actuel incorrect." : "Current password is incorrect.");
+        setLoading(false);
+        return;
+      }
+      const data = await supaPut("/user", { password: pass }, token);
+      if (data.id) { setOk(lang === "fr" ? "Mot de passe mis à jour !" : "Password updated!"); setTimeout(() => go("user"), 1600); }
+      else setErr(data.msg || data.error_description || (lang === "fr" ? "Erreur" : "Error"));
+    } catch { setErr(t.serverError); }
+    setLoading(false);
+  };
+
   const handleDelete = async () => {
-  if (!token || !user) return;
-  setErr(""); setLoading(true);
-  try {
-    const r = await fetch(`${SUPABASE_URL}/functions/v1/delete-account`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${token}`,
-        "apikey": SUPABASE_ANON,
-      },
-    });
-    const result = await r.json();
-    if (!r.ok || result.error) {
-      setErr(result.error || t.serverError);
-      setLoading(false);
-      return;
-    }
-    // Suppression confirmée côté serveur → on nettoie le local
-    const db = await openDB();
-    const tx = db.transaction(["sessions", "kv"], "readwrite");
-    tx.objectStore("sessions").clear();
-    tx.objectStore("kv").clear();
-    onAuth(null);
-    onClose();
-  } catch { setErr(t.serverError); }
-  setLoading(false);
-};
-  // ── Meta par vue
+    if (!token || !user) return;
+    setErr(""); setLoading(true);
+    try {
+      const r = await fetch(`${SUPABASE_URL}/functions/v1/delete-account`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}`,
+          "apikey": SUPABASE_ANON,
+        },
+      });
+      const result = await r.json();
+      if (!r.ok || result.error) { setErr(result.error || t.serverError); setLoading(false); return; }
+      const db = await openDB();
+      const tx = db.transaction(["sessions", "kv"], "readwrite");
+      tx.objectStore("sessions").clear();
+      tx.objectStore("kv").clear();
+      onAuth(null);
+      onClose();
+    } catch { setErr(t.serverError); }
+    setLoading(false);
+  };
+
   const meta: Record<CloudView, { icon: React.ReactNode; title: string; sub: string }> = {
     signup: { icon: <Cloud size={14} style={{ color: ORANGE }}/>, title: t.modalTitle, sub: t.modalSub },
     signin: { icon: <User size={14} style={{ color: ORANGE }}/>, title: t.signInTitle, sub: t.signInSub },
@@ -585,7 +589,6 @@ function CloudModal({
   };
   const { icon, title, sub } = meta[view];
 
-  // ── Primitives partagées
   const Err = () => err ? (
     <div style={{ display:"flex", alignItems:"center", gap:8, padding:"10px 12px", borderRadius:10, background:"rgba(239,68,68,0.08)", border:"1px solid rgba(239,68,68,0.2)", fontSize:12, color:RED }}>
       <AlertCircle size={12}/>{err}
@@ -609,7 +612,7 @@ function CloudModal({
       boxShadow: !d && !loading ? "0 0 28px rgba(249,115,22,0.3)" : "none",
       transition:"all 0.2s", fontFamily:"'Inter',sans-serif",
     }}>
-      {loading ? <><Spin/> Chargement…</> : <>{label}<ChevronRight size={14}/></>}
+      {loading ? <><Spin/> {lang === "fr" ? "Chargement…" : "Loading…"}</> : <>{label}<ChevronRight size={14}/></>}
     </button>
   );
 
@@ -623,10 +626,8 @@ function CloudModal({
     </button>
   );
 
-  // ── Vues
   const renderBody = () => {
     switch (view) {
-
       case "signup": return (
         <div style={{ display:"flex", flexDirection:"column", gap:16 }}>
           <Field label={t.emailLbl} icon={<Mail size={13}/>} tk={tk}>
@@ -744,7 +745,7 @@ function CloudModal({
             </div>
             <div style={{ fontSize:12, color:tk.muted, marginTop:6, lineHeight:1.6 }}>
               {lang === "fr"
-                ? <>Vérifiez <strong style={{ color:tk.text }}>{email}</strong> et cliquez sur le lien.</>
+                ? <><strong style={{ color:tk.text }}>{email}</strong> — vérifiez et cliquez sur le lien.</>
                 : <>Check <strong style={{ color:tk.text }}>{email}</strong> and click the link.</>}
             </div>
           </div>
@@ -752,7 +753,6 @@ function CloudModal({
         </div>
       );
 
-      // ── RESET PASSWORD (depuis le lien e-mail)
       case "reset": return (
         <div style={{ display:"flex", flexDirection:"column", gap:16 }}>
           {!recoveryToken && (
@@ -762,14 +762,8 @@ function CloudModal({
                 : "Invalid or expired link. Please restart from \"Forgot password\"."}
             </div>
           )}
-          <PasswordField
-            label={lang === "fr" ? "Nouveau mot de passe" : "New password"}
-            val={pass} onChange={v => { setPass(v); setErr(""); }} tk={tk} onEnter={handleReset}
-          />
-          <PasswordField
-            label={lang === "fr" ? "Confirmer" : "Confirm password"}
-            val={pass2} onChange={v => { setPass2(v); setErr(""); }} tk={tk} onEnter={handleReset}
-          />
+          <PasswordField label={lang === "fr" ? "Nouveau mot de passe" : "New password"} val={pass} onChange={(v: string) => { setPass(v); setErr(""); }} tk={tk} onEnter={handleReset}/>
+          <PasswordField label={lang === "fr" ? "Confirmer" : "Confirm password"} val={pass2} onChange={(v: string) => { setPass2(v); setErr(""); }} tk={tk} onEnter={handleReset}/>
           {pass.length > 0 && (
             <div style={{ display:"flex", gap:3, marginTop:-8 }}>
               {[1,2,3,4].map(i => (
@@ -779,11 +773,7 @@ function CloudModal({
             </div>
           )}
           <Err/><Ok/>
-          <PrimaryBtn
-            label={lang === "fr" ? "Changer le mot de passe" : "Update password"}
-            onClick={handleReset}
-            disabled={!pass || !pass2 || !recoveryToken}
-          />
+          <PrimaryBtn label={lang === "fr" ? "Changer le mot de passe" : "Update password"} onClick={handleReset} disabled={!pass || !pass2 || !recoveryToken}/>
         </div>
       );
 
@@ -823,21 +813,11 @@ function CloudModal({
         </div>
       );
 
-      // ── CHANGE PASSWORD (utilisateur connecté)
       case "change-pass": return (
         <div style={{ display:"flex", flexDirection:"column", gap:16 }}>
-          <PasswordField
-            label={lang === "fr" ? "Mot de passe actuel" : "Current password"}
-            val={curPass} onChange={v => { setCurPass(v); setErr(""); }} tk={tk}
-          />
-          <PasswordField
-            label={lang === "fr" ? "Nouveau mot de passe" : "New password"}
-            val={pass} onChange={v => { setPass(v); setErr(""); }} tk={tk} onEnter={handleChangePass}
-          />
-          <PasswordField
-            label={lang === "fr" ? "Confirmer" : "Confirm"}
-            val={pass2} onChange={v => { setPass2(v); setErr(""); }} tk={tk} onEnter={handleChangePass}
-          />
+          <PasswordField label={lang === "fr" ? "Mot de passe actuel" : "Current password"} val={curPass} onChange={(v: string) => { setCurPass(v); setErr(""); }} tk={tk}/>
+          <PasswordField label={lang === "fr" ? "Nouveau mot de passe" : "New password"} val={pass} onChange={(v: string) => { setPass(v); setErr(""); }} tk={tk} onEnter={handleChangePass}/>
+          <PasswordField label={lang === "fr" ? "Confirmer" : "Confirm"} val={pass2} onChange={(v: string) => { setPass2(v); setErr(""); }} tk={tk} onEnter={handleChangePass}/>
           {pass.length > 0 && (
             <div style={{ display:"flex", gap:3, marginTop:-8 }}>
               {[1,2,3,4].map(i => (
@@ -854,11 +834,7 @@ function CloudModal({
 
       case "delete": return (
         <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
-          <div style={{
-            padding:16, borderRadius:14,
-            background:"rgba(239,68,68,0.06)", border:"1px solid rgba(239,68,68,0.18)",
-            display:"flex", flexDirection:"column", gap:12,
-          }}>
+          <div style={{ padding:16, borderRadius:14, background:"rgba(239,68,68,0.06)", border:"1px solid rgba(239,68,68,0.18)", display:"flex", flexDirection:"column", gap:12 }}>
             <div style={{ display:"flex", alignItems:"center", gap:8 }}>
               <AlertCircle size={16} style={{ color:RED, flexShrink:0 }}/>
               <span style={{ fontSize:13, fontWeight:600, color:RED }}>
@@ -867,36 +843,25 @@ function CloudModal({
             </div>
             <p style={{ fontSize:12, color:tk.muted, lineHeight:1.75 }}>
               {lang === "fr"
-                ? <>Cette action est <strong style={{ color:RED }}>irréversible</strong>. Toutes vos sessions, statistiques et données cloud seront effacées.</>
-                : <>This action is <strong style={{ color:RED }}>irreversible</strong>. All your sessions, stats, and cloud data will be permanently erased.</>}
+                ? <><strong style={{ color:RED }}>Irréversible</strong>. Toutes vos sessions et données cloud seront effacées.</>
+                : <><strong style={{ color:RED }}>Irreversible</strong>. All sessions, stats, and cloud data will be permanently erased.</>}
             </p>
             <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
               <label style={{ fontSize:11, color:"rgba(239,68,68,0.7)" }}>
                 {lang === "fr" ? 'Tapez "supprimer" pour confirmer' : 'Type "delete" to confirm'}
               </label>
-              <input
-                type="text" value={delConfirm}
-                onChange={e => setDelConfirm(e.target.value)}
+              <input type="text" value={delConfirm} onChange={e => setDelConfirm(e.target.value)}
                 placeholder={lang === "fr" ? "supprimer" : "delete"}
-                style={{
-                  padding:"9px 12px", borderRadius:10, border:"1px solid rgba(239,68,68,0.25)",
-                  background:"rgba(239,68,68,0.05)", color:tk.text, fontSize:12,
-                  fontFamily:"'Inter',sans-serif", outline:"none",
-                }}
+                style={{ padding:"9px 12px", borderRadius:10, border:"1px solid rgba(239,68,68,0.25)", background:"rgba(239,68,68,0.05)", color:tk.text, fontSize:12, fontFamily:"'Inter',sans-serif", outline:"none" }}
               />
             </div>
-            <button
-              onClick={handleDelete}
-              disabled={loading || delConfirm.toLowerCase() !== (lang === "fr" ? "supprimer" : "delete")}
-              style={{
-                display:"flex", alignItems:"center", justifyContent:"center", gap:8,
-                padding:"11px", borderRadius:12, border:"none",
-                background:RED, color:"#fff", fontSize:12, fontWeight:600,
-                cursor: loading || delConfirm.toLowerCase() !== (lang === "fr" ? "supprimer" : "delete") ? "not-allowed" : "pointer",
-                opacity: loading || delConfirm.toLowerCase() !== (lang === "fr" ? "supprimer" : "delete") ? 0.35 : 1,
-                transition:"all .2s", fontFamily:"'Inter',sans-serif",
-              }}
-            >
+            <button onClick={handleDelete} disabled={loading || delConfirm.toLowerCase() !== (lang === "fr" ? "supprimer" : "delete")} style={{
+              display:"flex", alignItems:"center", justifyContent:"center", gap:8, padding:"11px", borderRadius:12, border:"none",
+              background:RED, color:"#fff", fontSize:12, fontWeight:600,
+              cursor: loading || delConfirm.toLowerCase() !== (lang === "fr" ? "supprimer" : "delete") ? "not-allowed" : "pointer",
+              opacity: loading || delConfirm.toLowerCase() !== (lang === "fr" ? "supprimer" : "delete") ? 0.35 : 1,
+              transition:"all .2s", fontFamily:"'Inter',sans-serif",
+            }}>
               {loading ? <><Spin/> {lang === "fr" ? "Suppression…" : "Deleting…"}</> : <>{lang === "fr" ? "Supprimer définitivement" : "Delete permanently"}</>}
             </button>
           </div>
@@ -908,22 +873,11 @@ function CloudModal({
   };
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4"
-      style={{ background: tk.overlay }}
-      onClick={e => e.target === e.currentTarget && onClose()}
-    >
-      <div style={{
-        width:"100%", maxWidth:420, borderRadius:22, overflow:"hidden",
-        background:tk.modalBg, border:`1px solid ${tk.modalB}`,
-        backdropFilter:"blur(24px)", boxShadow:"0 40px 80px rgba(0,0,0,0.55)",
-        animation:"modalIn 0.25s cubic-bezier(0.16,1,0.3,1)",
-      }}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: tk.overlay }} onClick={e => e.target === e.currentTarget && onClose()}>
+      <div style={{ width:"100%", maxWidth:420, borderRadius:22, overflow:"hidden", background:tk.modalBg, border:`1px solid ${tk.modalB}`, backdropFilter:"blur(24px)", boxShadow:"0 40px 80px rgba(0,0,0,0.55)", animation:"modalIn 0.25s cubic-bezier(0.16,1,0.3,1)" }}>
         <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"18px 22px 14px", borderBottom:`1px solid ${tk.divider}` }}>
           <div style={{ display:"flex", alignItems:"center", gap:12 }}>
-            <div style={{ width:34, height:34, borderRadius:10, display:"flex", alignItems:"center", justifyContent:"center", background:"rgba(249,115,22,0.1)", border:"1px solid rgba(249,115,22,0.18)" }}>
-              {icon}
-            </div>
+            <div style={{ width:34, height:34, borderRadius:10, display:"flex", alignItems:"center", justifyContent:"center", background:"rgba(249,115,22,0.1)", border:"1px solid rgba(249,115,22,0.18)" }}>{icon}</div>
             <div>
               <div style={{ fontSize:13, fontWeight:600, color:tk.text }}>{title}</div>
               <div style={{ fontSize:11, color:tk.muted, marginTop:2, maxWidth:220, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{sub}</div>
@@ -933,23 +887,18 @@ function CloudModal({
             <X size={13}/>
           </button>
         </div>
-        <div style={{ padding:"22px 22px 24px" }}>
-          {renderBody()}
-        </div>
+        <div style={{ padding:"22px 22px 24px" }}>{renderBody()}</div>
       </div>
     </div>
   );
 }
-function Field({ label, icon, suffix, children, tk }) {
+
+function Field({ label, icon, suffix, children, tk }: any) {
   const [focused, setFocused] = useState(false);
   return (
     <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
       <label style={{ fontSize:11, fontWeight:500, color:tk.muted }}>{label}</label>
-      <div style={{
-        display:"flex", alignItems:"center", gap:8, padding:"10px 12px", borderRadius:12,
-        background:tk.card, border:`1px solid ${focused?"rgba(249,115,22,0.45)":tk.border}`,
-        transition:"border-color 0.2s",
-      }}
+      <div style={{ display:"flex", alignItems:"center", gap:8, padding:"10px 12px", borderRadius:12, background:tk.card, border:`1px solid ${focused?"rgba(249,115,22,0.45)":tk.border}`, transition:"border-color 0.2s" }}
         onFocus={() => setFocused(true)} onBlur={() => setFocused(false)}>
         <span style={{ color:tk.subtle, lineHeight:0, flexShrink:0 }}>{icon}</span>
         <div style={{ flex:1 }}>{children}</div>
@@ -962,20 +911,16 @@ function Field({ label, icon, suffix, children, tk }) {
 function Spin() {
   return <div style={{ width:14, height:14, borderRadius:"50%", border:"2px solid rgba(255,255,255,0.3)", borderTopColor:"#fff", animation:"spin 0.7s linear infinite" }}/>;
 }
-function PasswordField({
-  label, val, onChange, tk, onEnter, placeholder = "••••••••",
-}) {
+
+function PasswordField({ label, val, onChange, tk, onEnter, placeholder = "••••••••" }: any) {
   const [vis, setVis] = useState(false);
   return (
     <Field label={label} icon={<Lock size={13}/>} tk={tk} suffix={
-      <button type="button" onClick={() => setVis(x => !x)} style={{ color:tk.subtle, cursor:"pointer", lineHeight:0 }}>
+      <button type="button" onClick={() => setVis((x: boolean) => !x)} style={{ color:tk.subtle, cursor:"pointer", lineHeight:0 }}>
         {vis ? <EyeOff size={13}/> : <Eye size={13}/>}
       </button>
     }>
-      <input
-        type={vis ? "text" : "password"}
-        value={val}
-        placeholder={placeholder}
+      <input type={vis ? "text" : "password"} value={val} placeholder={placeholder}
         onChange={e => onChange(e.target.value)}
         onKeyDown={e => { if (e.key === "Enter" && onEnter) onEnter(); }}
         style={{ width:"100%", background:"transparent", border:"none", outline:"none", fontSize:13, color:tk.text, fontFamily:"'Inter',sans-serif" }}
@@ -983,6 +928,7 @@ function PasswordField({
     </Field>
   );
 }
+
 // ─────────────────────────────────────────────
 // MAIN APP
 // ─────────────────────────────────────────────
@@ -992,31 +938,33 @@ export default function App() {
   const [isRunning,     setIsRunning]     = useState(false);
   const [task,          setTask]          = useState("");
   const [taskTouched,   setTaskTouched]   = useState(false);
-  const [activeSound,   setActiveSound]   = useState(null);
+  const [activeSound,   setActiveSound]   = useState<string | null>(null);
   const [volume,        setVolume]        = useState(0.6);
-  const [theme,         setTheme]         = useState("dark");
+  // FIX #1 — theme par défaut = "light"
+  const [theme,         setTheme]         = useState("light");
   const [lang,          setLang]          = useState("en");
   const [isImmersive,   setIsImmersive]   = useState(false);
   const [menuOpen,      setMenuOpen]      = useState(false);
   const [showCloud,     setShowCloud]     = useState(false);
   const [statsReady,    setStatsReady]    = useState(false);
-  const [toasts,        setToasts]        = useState([]);
-  const [user,          setUser]          = useState(null);
-  const [token,         setToken]         = useState(null);
-  const [localSess,     setLocalSess]     = useState([]);
-  const [cloudSess,     setCloudSess]     = useState([]);
+  const [toasts,        setToasts]        = useState<any[]>([]);
+  const [user,          setUser]          = useState<{ id: string; email: string } | null>(null);
+  const [token,         setToken]         = useState<string | null>(null);
+  const [localSess,     setLocalSess]     = useState<any[]>([]);
+  const [cloudSess,     setCloudSess]     = useState<any[]>([]);
   const [syncing,       setSyncing]       = useState(false);
   const [streak,        setStreak]        = useState(0);
-  const [resetToken, setResetToken] = useState(null);
+  const [resetToken,    setResetToken]    = useState<string | null>(null);
 
-  const timerRef    = useRef(null);
-  const taskRef     = useRef(null);
-  const startRef    = useRef(null);
+  const timerRef    = useRef<ReturnType<typeof setInterval> | null>(null);
+  const taskRef     = useRef<HTMLInputElement | null>(null);
+  const startRef    = useRef<number | null>(null);
 
-  const tk = TK[theme];
-  const t  = T[lang];
+  const tk = TK[theme as keyof typeof TK];
+  const t  = T[lang as keyof typeof T];
   const taskValid  = task.trim().length > 0;
   const isBreak    = mode === "break";
+
   // ── Boot: load from IndexedDB
   useEffect(() => {
     (async () => {
@@ -1025,13 +973,13 @@ export default function App() {
         idb.getKV("sb_token"), idb.getKV("sb_user"),
         idb.allSessions(),
       ]);
-      if (th) setTheme(th);
+      // FIX #1 — on charge le thème sauvegardé, sinon "light" par défaut
+      if (th) setTheme(th); // si pas de thème stocké, reste "light" (valeur initiale)
       if (lg) setLang(lg);
       if (vl) setVolume(vl);
       if (tk2 && usr) { setToken(tk2); setUser(usr); }
       setLocalSess(sessions);
-      // calc streak
-      const days = new Set(sessions.filter(s=>s.status==="completed").map(s=>s.completed_at?.slice(0,10)));
+      const days = new Set(sessions.filter((s: any) => s.status==="completed").map((s: any) => s.completed_at?.slice(0,10)));
       let s=0; const today=new Date();
       for (let i=0;i<30;i++) {
         const d=new Date(today); d.setDate(d.getDate()-i);
@@ -1040,19 +988,21 @@ export default function App() {
       setStreak(s);
     })();
   }, []);
-// ── Détecte le lien de récupération de mot de passe (clic depuis l'e-mail)
-useEffect(() => {
-  const hash = window.location.hash;
-  if (hash.includes("type=recovery")) {
-    const params = new URLSearchParams(hash.slice(1));
-    const at = params.get("access_token");
-    if (at) {
-      setResetToken(at);
-      setShowCloud(true);
-      window.history.replaceState(null, "", window.location.pathname + window.location.search);
+
+  // ── Détecte le lien de récupération de mot de passe
+  useEffect(() => {
+    const hash = window.location.hash;
+    if (hash.includes("type=recovery")) {
+      const params = new URLSearchParams(hash.slice(1));
+      const at = params.get("access_token");
+      if (at) {
+        setResetToken(at);
+        setShowCloud(true);
+        window.history.replaceState(null, "", window.location.pathname + window.location.search);
+      }
     }
-  }
-}, []);
+  }, []);
+
   // ── Persist settings
   useEffect(() => { idb.setKV("theme",theme); }, [theme]);
   useEffect(() => { idb.setKV("lang",lang);   }, [lang]);
@@ -1061,12 +1011,12 @@ useEffect(() => {
   // ── Fetch cloud sessions on login
   useEffect(() => {
     if (!user || !token) { setCloudSess([]); return; }
-    sb.getSessions(token, user.id).then(d => { if (Array.isArray(d)) setCloudSess(d); });
+    sb.getSessions(token, user.id).then((d: any) => { if (Array.isArray(d)) setCloudSess(d); });
   }, [user, token]);
 
   // ── Timer
   const clearTimer = () => { if (timerRef.current) clearInterval(timerRef.current); };
-  const resetTimer = useCallback((m) => {
+  const resetTimer = useCallback((m: string) => {
     clearTimer(); setIsRunning(false); setIsImmersive(false);
     setTimeLeft(m==="break"?BREAK_DUR:FOCUS_DUR);
   }, []);
@@ -1095,20 +1045,20 @@ useEffect(() => {
 
   // ── Esc key
   useEffect(() => {
-    const h = e => { if (e.key==="Escape"&&isImmersive) setIsImmersive(false); };
+    const h = (e: KeyboardEvent) => { if (e.key==="Escape"&&isImmersive) setIsImmersive(false); };
     window.addEventListener("keydown",h);
     return () => window.removeEventListener("keydown",h);
   }, [isImmersive]);
 
   // ── Toast
-  const toast = useCallback((msg, type="info") => {
+  const toast = useCallback((msg: string, type="info") => {
     const id = uid();
     setToasts(p => [...p, {id,msg,type}]);
-    setTimeout(() => setToasts(p=>p.filter(x=>x.id!==id)), 3200);
+    setTimeout(() => setToasts(p=>p.filter((x: any)=>x.id!==id)), 3200);
   }, []);
 
   // ── Finish session
-  const finishSession = async (status) => {
+  const finishSession = async (status: string) => {
     const elapsed = startRef.current ? Math.round((Date.now()-startRef.current)/60000) : 25;
     const sess = {
       id:               uid(),
@@ -1120,15 +1070,13 @@ useEffect(() => {
     await idb.saveSession(sess);
     const updated = await idb.allSessions();
     setLocalSess(updated);
-    // streak update
-    const days = new Set(updated.filter(s=>s.status==="completed").map(s=>s.completed_at?.slice(0,10)));
+    const days = new Set(updated.filter((s: any)=>s.status==="completed").map((s: any)=>s.completed_at?.slice(0,10)));
     let sk=0; const today=new Date();
     for (let i=0;i<30;i++) {
       const d=new Date(today); d.setDate(d.getDate()-i);
       if (days.has(d.toISOString().slice(0,10))) sk++; else if (i>0) break;
     }
     setStreak(sk);
-    // sync
     if (user && token) {
       try {
         await sb.upsertSession(token, {...sess, user_id:user.id});
@@ -1140,7 +1088,7 @@ useEffect(() => {
   };
 
   // ── Auth
-  const handleAuth = async (data) => {
+  const handleAuth = async (data: any) => {
     if (!data) {
       if (token) sb.signOut(token).catch(()=>{});
       setUser(null); setToken(null); setCloudSess([]);
@@ -1156,7 +1104,6 @@ useEffect(() => {
       await sb.upsertSettings(tk2, { user_id:usr.id, theme, focus_duration:25, short_break:5, long_break:15 });
       const cloud = await sb.getSessions(tk2, usr.id);
       if (Array.isArray(cloud)) setCloudSess(cloud);
-      // push pending local sessions
       for (const s of localSess.slice(0,20)) {
         await sb.upsertSession(tk2, {...s, user_id:usr.id}).catch(()=>{});
       }
@@ -1166,24 +1113,35 @@ useEffect(() => {
   };
 
   // ── Sound
-  const toggleSound = (id) => {
+  const toggleSound = (id: string | null) => {
     if (id === null) { audio.stop(); setActiveSound(null); return; }
     if (activeSound===id) { audio.stop(); setActiveSound(null); }
     else { audio.play(id); audio.setVolume(volume); setActiveSound(id); }
   };
 
-  // ── Start/pause
+  // ── Start/pause + FIX #3 — Abandoned quand on arrête un timer en cours
   const handlePlay = () => {
     if (!isRunning && !taskValid && mode==="focus") {
       setTaskTouched(true); taskRef.current?.focus(); return;
     }
-    const next = !isRunning;
-    setIsRunning(next);
-    if (next && mode==="focus") setIsImmersive(true);
-    else if (!next) setIsImmersive(false);
+    if (isRunning) {
+      // FIX #3 — on arrête le timer → on enregistre "abandoned" si focus et > 0s écoulées
+      if (mode === "focus" && startRef.current) {
+        finishSession("abandoned");
+      }
+      setIsRunning(false);
+      setIsImmersive(false);
+    } else {
+      setIsRunning(true);
+      if (mode==="focus") setIsImmersive(true);
+    }
   };
 
-  const switchMode = (m) => {
+  const switchMode = (m: string) => {
+    // FIX #3 — si on change de mode avec le timer en cours → abandoned
+    if (isRunning && mode === "focus" && m !== "focus" && startRef.current) {
+      finishSession("abandoned");
+    }
     if (m==="stats") {
       setStatsReady(false); setTimeout(()=>setStatsReady(true),20);
       setMode("stats"); clearTimer(); setIsRunning(false); setIsImmersive(false);
@@ -1199,36 +1157,44 @@ useEffect(() => {
   const breakOff   = BREAK_C*(1-progress);
 
   const dimStyle = () => isImmersive
-    ? { opacity:0.12, pointerEvents:"none", transition:"opacity 0.7s ease" }
-    : { opacity:1,    pointerEvents:"auto",  transition:"opacity 0.7s ease" };
+    ? { opacity:0.12, pointerEvents:"none" as const, transition:"opacity 0.7s ease" }
+    : { opacity:1,    pointerEvents:"auto" as const,  transition:"opacity 0.7s ease" };
 
-  // Analytics data — REAL only
+  // Analytics data
   const allSess = [
-    ...localSess.map(s=>({...s,src:"local"})),
-    ...cloudSess.filter(c=>!localSess.some(l=>l.id===c.id)).map(s=>({...s,src:"cloud"})),
-  ].sort((a,b)=>new Date(b.completed_at)-new Date(a.completed_at));
+    ...localSess.map((s: any)=>({...s,src:"local"})),
+    ...cloudSess.filter((c: any)=>!localSess.some((l: any)=>l.id===c.id)).map((s: any)=>({...s,src:"cloud"})),
+  ].sort((a,b)=>new Date(b.completed_at).getTime()-new Date(a.completed_at).getTime());
 
-  const completedN  = allSess.filter(s=>s.status==="completed").length;
+  const completedN  = allSess.filter((s: any)=>s.status==="completed").length;
   const totalN      = allSess.length;
-  const totalMins   = allSess.reduce((a,s)=>a+(s.duration_minutes||0),0);
+  const totalMins   = allSess.reduce((a: number,s: any)=>a+(s.duration_minutes||0),0);
   const compRate    = totalN>0 ? Math.round(completedN/totalN*100) : 0;
   const donutData   = totalN>0
     ? [{name:"c",value:compRate},{name:"a",value:100-compRate}]
     : [{name:"c",value:0},{name:"a",value:100}];
 
-  // Weekly chart from real data
-  const weeklyMap = {};
-  allSess.forEach(s => {
+  const weeklyMap: Record<string, number> = {};
+  allSess.forEach((s: any) => {
     const d = s.completed_at?.slice(0,10);
     if (!d) return;
     weeklyMap[d] = (weeklyMap[d]||0)+(s.duration_minutes||0);
   });
-  const chartData = DAYS[lang].map((day,i) => {
+  const days_arr = DAYS[lang as keyof typeof DAYS];
+  const chartData = days_arr.map((day: string, i: number) => {
     const d = new Date(); d.setDate(d.getDate()-6+i);
     const key = d.toISOString().slice(0,10);
     return { day, minutes: weeklyMap[key]||0 };
   });
-  const chartHasData = chartData.some(c=>c.minutes>0);
+  const chartHasData = chartData.some((c: any)=>c.minutes>0);
+
+  // ── FIX #2 : couleurs du TaskInput adaptées au thème
+  const taskInputTextColor = theme === "light"
+    ? (task ? "#0f172a" : "#94a3b8")
+    : (task ? "#fafafa" : "rgba(255,255,255,0.3)");
+  const taskInputBorderColor = theme === "light" ? "#cbd5e1" : "rgba(255,255,255,0.1)";
+  const taskInputFocusBorderColor = "rgba(249,115,22,0.55)";
+  const taskInputErrorBorderColor = "#ef4444";
 
   return (
     <div style={{ minHeight:"100vh", width:"100%", background:tk.bg, fontFamily:"'Inter',sans-serif", display:"flex", flexDirection:"column", position:"relative", overflow:"hidden" }}>
@@ -1246,7 +1212,7 @@ useEffect(() => {
         @keyframes breathe   { 0%,100%{transform:scale(1)} 50%{transform:scale(1.012)} }
         input[type=range]{ -webkit-appearance:none; appearance:none; height:3px; border-radius:4px; outline:none; cursor:pointer; }
         input[type=range]::-webkit-slider-thumb{ -webkit-appearance:none; width:14px; height:14px; border-radius:50%; background:${ORANGE}; cursor:pointer; box-shadow:0 0 8px rgba(249,115,22,0.5); }
-        ::-webkit-scrollbar{width:4px} ::-webkit-scrollbar-track{background:transparent} ::-webkit-scrollbar-thumb{background:rgba(255,255,255,0.1);border-radius:2px}
+        ::-webkit-scrollbar{width:4px} ::-webkit-scrollbar-track{background:transparent} ::-webkit-scrollbar-thumb{background:rgba(0,0,0,0.15);border-radius:2px}
         .nav-pills{ display:none }
         .nav-right{ display:none }
         .nav-burger{ display:flex }
@@ -1257,7 +1223,7 @@ useEffect(() => {
         }
       `}</style>
 
-      {/* ── Subtle grid — dark only */}
+      {/* Subtle grid — dark only */}
       {theme==="dark" && (
         <div style={{ position:"fixed", inset:0, zIndex:0, pointerEvents:"none", opacity:0.015,
           backgroundImage:"linear-gradient(rgba(255,255,255,0.6) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,0.6) 1px,transparent 1px)",
@@ -1271,7 +1237,6 @@ useEffect(() => {
         display:"flex", alignItems:"center", justifyContent:"space-between",
         padding:"18px 24px", maxWidth:960, margin:"0 auto", width:"100%",
       }}>
-        {/* Wordmark */}
         <div style={{ display:"flex", alignItems:"center", gap:10 }}>
           <div style={{
             width:8, height:8, borderRadius:"50%",
@@ -1282,13 +1247,11 @@ useEffect(() => {
           <span style={{ fontSize:11, fontWeight:700, letterSpacing:"0.24em", textTransform:"uppercase", color:tk.muted }}>{t.app}</span>
           {streak>0 && (
             <div style={{ display:"flex", alignItems:"center", gap:4, padding:"2px 8px", borderRadius:20, background:"rgba(249,115,22,0.08)", border:"1px solid rgba(249,115,22,0.15)" }}>
-              <Flame size={9} style={{ color:ORANGE }}/>
-              <span style={{ fontSize:10, fontWeight:600, color:ORANGE }}>{streak}</span>
+              <Flame size={9} style={{ color:ORANGE }}/><span style={{ fontSize:10, fontWeight:600, color:ORANGE }}>{streak}</span>
             </div>
           )}
         </div>
 
-        {/* Pills — desktop (md+) */}
         <div className="nav-pills" style={{ alignItems:"center", gap:4, borderRadius:99, padding:4, background:tk.pill, border:`1px solid ${tk.pillB}` }}>
           {[["focus",t.focus],["break",t.brk],["stats",t.stats]].map(([m,label])=>{
             const active=mode===m;
@@ -1307,7 +1270,6 @@ useEffect(() => {
           })}
         </div>
 
-        {/* Desktop right (md+) */}
         <div className="nav-right" style={{ alignItems:"center", gap:8 }}>
           {user && (
             <button onClick={() => setShowCloud(true)} style={{
@@ -1318,13 +1280,13 @@ useEffect(() => {
               <Wifi size={11}/><span style={{ maxWidth:70, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{user.email.split("@")[0]}</span>
             </button>
           )}
-          <button onClick={() => setLang(l=>l==="en"?"fr":"en")} style={{
+          <button onClick={() => setLang((l: string)=>l==="en"?"fr":"en")} style={{
             display:"flex", alignItems:"center", gap:5, padding:"6px 10px", borderRadius:10,
             background:tk.card, border:`1px solid ${tk.border}`, color:tk.muted, fontSize:11, fontWeight:600, cursor:"pointer",
           }}>
             <Globe size={11}/>{lang.toUpperCase()}
           </button>
-          <button onClick={() => setTheme(x=>x==="dark"?"light":"dark")} style={{
+          <button onClick={() => setTheme((x: string)=>x==="dark"?"light":"dark")} style={{
             width:32, height:32, borderRadius:10, display:"flex", alignItems:"center", justifyContent:"center",
             background:tk.card, border:`1px solid ${tk.border}`, color:tk.muted, cursor:"pointer",
           }}>
@@ -1340,7 +1302,6 @@ useEffect(() => {
           )}
         </div>
 
-        {/* Burger — phone + mini tablet only (< 768px) */}
         <button className="nav-burger" onClick={() => setMenuOpen(true)} style={{
           width:36, height:36, borderRadius:10, display:"flex", alignItems:"center", justifyContent:"center",
           background:tk.card, border:`1px solid ${tk.border}`, color:tk.muted, cursor:"pointer",
@@ -1349,12 +1310,10 @@ useEffect(() => {
         </button>
       </nav>
 
-      {/* Mobile menu */}
       <MobileMenu open={menuOpen} onClose={() => setMenuOpen(false)}
         mode={mode} switchMode={switchMode} theme={theme} setTheme={setTheme}
         lang={lang} setLang={setLang} user={user} setShowCloud={setShowCloud} tk={tk} t={t}/>
 
-      {/* Immersive hint */}
       {isImmersive && (
         <div style={{
           position:"fixed", top:16, left:"50%", transform:"translateX(-50%)", zIndex:30,
@@ -1371,23 +1330,76 @@ useEffect(() => {
       {mode==="focus" && (
         <main style={{ flex:1, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:32, padding:"0 24px 40px" }}>
 
-          {/* Task input */}
+          {/* FIX #2 — Task input mis en évidence */}
           <div style={{ ...dimStyle(), width:"100%", maxWidth:360, display:"flex", flexDirection:"column", gap:6 }}>
-            <TaskInput ref={taskRef} value={task} onChange={v=>{setTask(v);setTaskTouched(false);}}
-              onBlur={()=>setTaskTouched(true)} placeholder={t.placeholder} tk={tk}
-              error={taskTouched&&!taskValid} errorMsg={t.hint}/>
+            {/* Label visible */}
+            <div style={{ display:"flex", alignItems:"center", justifyContent:"center", gap:6, marginBottom:4 }}>
+              <span style={{ fontSize:10, fontWeight:700, letterSpacing:"0.25em", textTransform:"uppercase", color: ORANGE, opacity:0.8 }}>
+                {lang === "fr" ? "Votre tâche" : "Your task"}
+              </span>
+            </div>
+            {/* Conteneur mis en évidence */}
+            <div style={{
+              borderRadius:16,
+              padding:"14px 18px",
+              background: theme === "light" ? "rgba(255,255,255,0.95)" : "rgba(255,255,255,0.04)",
+              border: `1.5px solid ${taskTouched && !taskValid ? "#ef4444" : theme === "light" ? "#e2e8f0" : "rgba(255,255,255,0.12)"}`,
+              boxShadow: theme === "light"
+                ? "0 2px 16px rgba(249,115,22,0.08), 0 1px 4px rgba(0,0,0,0.06)"
+                : "0 0 0 1px rgba(249,115,22,0.08)",
+              transition:"border-color 0.2s, box-shadow 0.2s",
+            }}>
+              <input
+                ref={taskRef}
+                type="text"
+                value={task}
+                onChange={e => { setTask(e.target.value); setTaskTouched(false); }}
+                onBlur={() => setTaskTouched(true)}
+                placeholder={t.placeholder}
+                onFocus={e => {
+                  (e.target.closest("div") as HTMLElement)!.style.borderColor = taskInputFocusBorderColor;
+                  (e.target.closest("div") as HTMLElement)!.style.boxShadow = theme === "light"
+                    ? "0 0 0 3px rgba(249,115,22,0.12), 0 2px 16px rgba(249,115,22,0.1)"
+                    : "0 0 0 2px rgba(249,115,22,0.25)";
+                }}
+                onBlurCapture={e => {
+                  setTaskTouched(true);
+                  const c = taskTouched && !task.trim();
+                  (e.target.closest("div") as HTMLElement)!.style.borderColor = c
+                    ? "#ef4444"
+                    : theme === "light" ? "#e2e8f0" : "rgba(255,255,255,0.12)";
+                  (e.target.closest("div") as HTMLElement)!.style.boxShadow = theme === "light"
+                    ? "0 2px 16px rgba(249,115,22,0.08), 0 1px 4px rgba(0,0,0,0.06)"
+                    : "0 0 0 1px rgba(249,115,22,0.08)";
+                }}
+                style={{
+                  width:"100%",
+                  background:"transparent",
+                  border:"none",
+                  outline:"none",
+                  textAlign:"center",
+                  fontSize:14,
+                  fontWeight:500,
+                  color: taskInputTextColor,
+                  fontFamily:"'Inter',sans-serif",
+                  letterSpacing:"0.01em",
+                  caretColor:ORANGE,
+                }}
+              />
+            </div>
+            {/* Message d'erreur */}
+            <div style={{ display:"flex", alignItems:"center", justifyContent:"center", gap:5, marginTop:2, opacity: taskTouched && !taskValid ? 1 : 0, height:16, transition:"opacity 0.2s" }}>
+              <AlertCircle size={10} style={{ color:"#ef4444" }}/>
+              <span style={{ fontSize:10, color:"#ef4444" }}>{t.hint}</span>
+            </div>
           </div>
 
           {/* Timer ring */}
           <div style={{ position:"relative", display:"flex", alignItems:"center", justifyContent:"center", userSelect:"none", cursor: isImmersive?"pointer":"default" }}
             onClick={() => isImmersive && setIsImmersive(false)}>
-
-            {/* Outer dashed orbit */}
             <svg width="340" height="340" style={{ position:"absolute", transform:"rotate(-90deg)", opacity: isImmersive?0.3:0.5, transition:"opacity 0.7s" }}>
               <circle cx="170" cy="170" r="160" fill="none" stroke={theme==="dark"?"rgba(255,255,255,0.04)":"rgba(0,0,0,0.04)"} strokeWidth="1" strokeDasharray="2 10"/>
             </svg>
-
-            {/* Main ring */}
             <svg width="300" height="300" style={{ transform:"rotate(-90deg)", animation: isRunning?"ringPulse 3s ease-in-out infinite":"none" }}>
               <circle cx="150" cy="150" r={RING_R} fill="none" stroke={theme==="dark"?"rgba(255,255,255,0.04)":"rgba(0,0,0,0.05)"} strokeWidth="1.5"/>
               <circle cx="150" cy="150" r={RING_R} fill="none" stroke="url(#fg)" strokeWidth="1.5"
@@ -1399,8 +1411,6 @@ useEffect(() => {
                 </linearGradient>
               </defs>
             </svg>
-
-            {/* Center */}
             <div style={{ position:"absolute", display:"flex", flexDirection:"column", alignItems:"center", gap:8, animation: isRunning&&isImmersive?"breathe 4s ease-in-out infinite":"none" }}>
               <span style={{
                 fontFamily:"'JetBrains Mono',monospace",
@@ -1419,8 +1429,6 @@ useEffect(() => {
           {/* Controls */}
           <div style={{ display:"flex", alignItems:"center", gap:20 }}>
             <CtrlBtn onClick={()=>resetTimer("focus")} tk={tk}><RotateCcw size={15}/></CtrlBtn>
-
-            {/* Play/Pause — perfectly round */}
             <button onClick={handlePlay} style={{
               width:72, height:72, borderRadius:"50%",
               display:"flex", alignItems:"center", justifyContent:"center",
@@ -1437,17 +1445,14 @@ useEffect(() => {
               }
               {isRunning && <span style={{ position:"absolute", inset:0, borderRadius:"50%", boxShadow:"0 0 0 8px rgba(249,115,22,0.08)", animation:"pulse 2s ease-in-out infinite" }}/>}
             </button>
-
             <CtrlBtn onClick={()=>switchMode("break")} tk={tk}>
               <span style={{ fontSize:10, fontWeight:600, fontFamily:"'JetBrains Mono',monospace" }}>5m</span>
             </CtrlBtn>
           </div>
 
-          {/* Soundscape */}
+          {/* Soundscape + Cloud nudge */}
           <div style={{ ...dimStyle(), width:"100%", maxWidth:360, display:"flex", flexDirection:"column", gap:10 }}>
             <SoundCard activeSound={activeSound} toggleSound={toggleSound} volume={volume} setVolume={setVolume} tk={tk} t={t}/>
-
-            {/* Cloud nudge */}
             <button onClick={()=>setShowCloud(true)} style={{
               width:"100%", display:"flex", alignItems:"center", justifyContent:"space-between",
               padding:"12px 16px", borderRadius:14,
@@ -1468,8 +1473,6 @@ useEffect(() => {
       {mode==="break" && (
         <main style={{ flex:1, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:32, padding:"0 24px 48px" }}>
           <span style={{ fontSize:9, fontWeight:700, letterSpacing:"0.4em", textTransform:"uppercase", color:"rgba(16,185,129,0.6)" }}>{t.breakLabel}</span>
-
-          {/* Break ring */}
           <div style={{ position:"relative", display:"flex", alignItems:"center", justifyContent:"center" }}>
             <svg width="260" height="260" style={{ transform:"rotate(-90deg)", animation: isRunning?"ringPulseG 3s ease-in-out infinite":"none" }}>
               <circle cx="130" cy="130" r={BREAK_R} fill="none" stroke={theme==="dark"?"rgba(255,255,255,0.04)":"rgba(0,0,0,0.05)"} strokeWidth="1.5"/>
@@ -1489,13 +1492,7 @@ useEffect(() => {
               </span>
             </div>
           </div>
-
-          {/* Break CTA */}
-          <div style={{
-            width:"100%", maxWidth:340, borderRadius:20, padding:24,
-            background: theme==="dark"?"rgba(16,185,129,0.04)":"rgba(16,185,129,0.03)",
-            border:"1px solid rgba(16,185,129,0.15)", display:"flex", flexDirection:"column", gap:18,
-          }}>
+          <div style={{ width:"100%", maxWidth:340, borderRadius:20, padding:24, background: theme==="dark"?"rgba(16,185,129,0.04)":"rgba(16,185,129,0.03)", border:"1px solid rgba(16,185,129,0.15)", display:"flex", flexDirection:"column", gap:18 }}>
             <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
               <div style={{ display:"flex", alignItems:"center", gap:8 }}>
                 <div style={{ width:5, height:5, borderRadius:"50%", background:GREEN, boxShadow:"0 0 8px rgba(16,185,129,0.8)" }}/>
@@ -1503,27 +1500,13 @@ useEffect(() => {
               </div>
               <p style={{ fontSize:13, color:tk.muted, lineHeight:1.8 }}>{t.breakCopy}</p>
             </div>
-            <a href="#" style={{
-              display:"flex", alignItems:"center", justifyContent:"center", gap:8,
-              padding:"14px", borderRadius:14, textDecoration:"none",
-              background:`linear-gradient(135deg,${GREEN},#059669)`,
-              color:"#f0fdf4", fontSize:13, fontWeight:600,
-              boxShadow:"0 0 0 1px rgba(16,185,129,0.25),0 0 28px rgba(16,185,129,0.25)",
-              transition:"transform 0.2s",
-            }}>
+            <a href="#" style={{ display:"flex", alignItems:"center", justifyContent:"center", gap:8, padding:"14px", borderRadius:14, textDecoration:"none", background:`linear-gradient(135deg,${GREEN},#059669)`, color:"#f0fdf4", fontSize:13, fontWeight:600, boxShadow:"0 0 0 1px rgba(16,185,129,0.25),0 0 28px rgba(16,185,129,0.25)", transition:"transform 0.2s" }}>
               {t.portfolio}<ExternalLink size={13}/>
             </a>
           </div>
-
-          {/* Break controls */}
           <div style={{ display:"flex", alignItems:"center", gap:20 }}>
             <CtrlBtn onClick={()=>resetTimer("break")} tk={tk}><RotateCcw size={15}/></CtrlBtn>
-            <button onClick={()=>setIsRunning(r=>!r)} style={{
-              width:64, height:64, borderRadius:"50%", display:"flex", alignItems:"center", justifyContent:"center",
-              background:`linear-gradient(140deg,${GREEN},#059669)`,
-              boxShadow:"0 0 0 1px rgba(16,185,129,0.25),0 0 28px rgba(16,185,129,0.3)",
-              color:"#052e16", border:"none", cursor:"pointer", transition:"all 0.2s", flexShrink:0,
-            }}>
+            <button onClick={()=>setIsRunning(r=>!r)} style={{ width:64, height:64, borderRadius:"50%", display:"flex", alignItems:"center", justifyContent:"center", background:`linear-gradient(140deg,${GREEN},#059669)`, boxShadow:"0 0 0 1px rgba(16,185,129,0.25),0 0 28px rgba(16,185,129,0.3)", color:"#052e16", border:"none", cursor:"pointer", transition:"all 0.2s", flexShrink:0 }}>
               {isRunning?<Pause size={20} fill="#052e16"/>:<Play size={20} fill="#052e16"/>}
             </button>
             <CtrlBtn onClick={()=>switchMode("focus")} tk={tk}><ArrowLeft size={15}/></CtrlBtn>
@@ -1533,12 +1516,7 @@ useEffect(() => {
 
       {/* ══════════ STATS ══════════ */}
       {mode==="stats" && (
-        <main style={{
-          flex:1, display:"flex", flexDirection:"column", gap:20, padding:"8px 24px 48px",
-          maxWidth:900, margin:"0 auto", width:"100%", overflowY:"auto",
-          animation: statsReady?"statsIn 0.35s cubic-bezier(0.16,1,0.3,1) forwards":"none",
-        }}>
-          {/* Header */}
+        <main style={{ flex:1, display:"flex", flexDirection:"column", gap:20, padding:"8px 24px 48px", maxWidth:900, margin:"0 auto", width:"100%", overflowY:"auto", animation: statsReady?"statsIn 0.35s cubic-bezier(0.16,1,0.3,1) forwards":"none" }}>
           <div style={{ display:"flex", alignItems:"flex-end", justifyContent:"space-between" }}>
             <div>
               <h1 style={{ fontSize:22, fontWeight:600, letterSpacing:"-0.02em", color:tk.text, margin:0 }}>{t.analytics}</h1>
@@ -1547,30 +1525,19 @@ useEffect(() => {
                 {user && <span style={{ display:"inline-flex", alignItems:"center", gap:4, color:GREEN }}><Wifi size={9}/>synced</span>}
               </p>
             </div>
-            <button onClick={()=>switchMode("focus")} style={{
-              display:"flex", alignItems:"center", gap:6, padding:"7px 12px", borderRadius:10,
-              background:tk.card, border:`1px solid ${tk.border}`, color:tk.muted, fontSize:11, fontWeight:500, cursor:"pointer",
-            }}>
+            <button onClick={()=>switchMode("focus")} style={{ display:"flex", alignItems:"center", gap:6, padding:"7px 12px", borderRadius:10, background:tk.card, border:`1px solid ${tk.border}`, color:tk.muted, fontSize:11, fontWeight:500, cursor:"pointer" }}>
               <ArrowLeft size={11}/>{t.focus}
             </button>
           </div>
 
-          {/* KPI cards */}
           <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(130px,1fr))", gap:10 }}>
             {[
               { label:t.hrs,    val: totalMins>0?(totalMins/60).toFixed(1):"—",  unit:"hrs", Icon:Clock,        c:ORANGE },
               { label:t.done_s, val: totalN>0?String(totalN):"—",                unit:"",    Icon:CheckCircle2, c:GREEN  },
-              { label:t.best,   val: (() => {
-                  if (!chartHasData) return "—";
-                  const best = chartData.reduce((a,b)=>b.minutes>a.minutes?b:a, chartData[0]);
-                  return best.minutes>0?best.day:"—";
-                })(),                                                             unit:"",    Icon:TrendingUp,   c:"#fb923c" },
+              { label:t.best,   val: (() => { if (!chartHasData) return "—"; const best = chartData.reduce((a: any,b: any)=>b.minutes>a.minutes?b:a, chartData[0]); return best.minutes>0?best.day:"—"; })(), unit:"", Icon:TrendingUp, c:"#fb923c" },
               { label:t.avg,    val: totalN>0?(totalMins/totalN).toFixed(1):"—", unit:"min", Icon:Flame,        c:ORANGE },
             ].map(({ label, val, unit, Icon, c })=>(
-              <div key={label} style={{
-                borderRadius:16, padding:"16px", display:"flex", flexDirection:"column", gap:12,
-                background:tk.card, border:`1px solid ${tk.border}`, transition:"transform 0.2s",
-              }}>
+              <div key={label} style={{ borderRadius:16, padding:"16px", display:"flex", flexDirection:"column", gap:12, background:tk.card, border:`1px solid ${tk.border}`, transition:"transform 0.2s" }}>
                 <div style={{ display:"flex", alignItems:"center", gap:8 }}>
                   <Icon size={12} style={{ color:c }}/><span style={{ fontSize:10, fontWeight:500, color:tk.muted }}>{label}</span>
                 </div>
@@ -1582,10 +1549,8 @@ useEffect(() => {
             ))}
           </div>
 
-          {/* Charts */}
           <div style={{ display:"grid", gridTemplateColumns:"1fr", gap:12 }}>
             <div style={{ display:"grid", gap:12, gridTemplateColumns:"minmax(0,1.6fr) minmax(0,1fr)" }}>
-              {/* Bar chart */}
               <div style={{ borderRadius:16, padding:20, background:tk.card, border:`1px solid ${tk.border}` }}>
                 <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:16 }}>
                   <span style={{ fontSize:10, fontWeight:600, letterSpacing:"0.18em", textTransform:"uppercase", color:tk.muted }}>{t.wkChart}</span>
@@ -1597,10 +1562,10 @@ useEffect(() => {
                       <XAxis dataKey="day" tick={{ fill:tk.subtle,fontSize:10,fontFamily:"'Inter',sans-serif" }} axisLine={false} tickLine={false}/>
                       <YAxis hide/>
                       <Tooltip contentStyle={{ background:theme==="dark"?"#18181b":"#fff", border:`1px solid ${tk.border}`, borderRadius:10, color:tk.text, fontSize:11, fontFamily:"'JetBrains Mono',monospace" }}
-                        formatter={v=>[`${v} min`,"Focus"]} cursor={{ fill:"rgba(255,255,255,0.02)" }}/>
+                        formatter={(v: any)=>[`${v} min`,"Focus"]} cursor={{ fill:"rgba(255,255,255,0.02)" }}/>
                       <Bar dataKey="minutes" radius={[5,5,0,0]}>
-                        {chartData.map((_,i)=>{
-                          const mx=Math.max(...chartData.map(d=>d.minutes));
+                        {chartData.map((_: any,i: number)=>{
+                          const mx=Math.max(...chartData.map((d: any)=>d.minutes));
                           return <Cell key={i} fill={chartData[i].minutes===mx&&mx>0?"url(#barG)":(theme==="dark"?"rgba(255,255,255,0.08)":"rgba(0,0,0,0.07)")}/>;
                         })}
                       </Bar>
@@ -1611,12 +1576,9 @@ useEffect(() => {
                       </defs>
                     </BarChart>
                   </ResponsiveContainer>
-                ) : (
-                  <EmptyChart tk={tk} t={t}/>
-                )}
+                ) : <EmptyChart tk={tk} t={t}/>}
               </div>
 
-              {/* Donut */}
               <div style={{ borderRadius:16, padding:20, background:tk.card, border:`1px solid ${tk.border}`, display:"flex", flexDirection:"column", gap:12 }}>
                 <span style={{ fontSize:10, fontWeight:600, letterSpacing:"0.18em", textTransform:"uppercase", color:tk.muted }}>{t.rate}</span>
                 <div style={{ flex:1, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center" }}>
@@ -1656,7 +1618,6 @@ useEffect(() => {
             </div>
           </div>
 
-          {/* Session history */}
           <div style={{ borderRadius:16, padding:20, background:tk.card, border:`1px solid ${tk.border}` }}>
             <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:16 }}>
               <span style={{ fontSize:10, fontWeight:600, letterSpacing:"0.18em", textTransform:"uppercase", color:tk.muted }}>{t.recent}</span>
@@ -1665,7 +1626,6 @@ useEffect(() => {
                 {cloudSess.length>0 && <span style={{ fontSize:10, color:GREEN, display:"flex", alignItems:"center", gap:4 }}><Wifi size={9}/>{cloudSess.length} {t.cloud}</span>}
               </div>
             </div>
-
             {allSess.length===0 ? (
               <div style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:10, padding:"32px 0" }}>
                 <Clock size={22} style={{ color:tk.subtle }}/>
@@ -1673,13 +1633,8 @@ useEffect(() => {
               </div>
             ) : (
               <div style={{ display:"flex", flexDirection:"column" }}>
-                {allSess.slice(0,12).map((s,i)=>(
-                  <div key={s.id} style={{
-                    display:"flex", alignItems:"center", justifyContent:"space-between",
-                    padding:"11px 4px",
-                    borderBottom: i<Math.min(allSess.length,12)-1?`1px solid ${tk.divider}`:"none",
-                    animation:`slideUp 0.3s ease ${i*0.04}s both`,
-                  }}>
+                {allSess.slice(0,12).map((s: any,i: number)=>(
+                  <div key={s.id} style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"11px 4px", borderBottom: i<Math.min(allSess.length,12)-1?`1px solid ${tk.divider}`:"none", animation:`slideUp 0.3s ease ${i*0.04}s both` }}>
                     <div style={{ display:"flex", alignItems:"center", gap:10, minWidth:0 }}>
                       <div style={{ width:5, height:5, borderRadius:"50%", flexShrink:0, background: s.status==="completed"?ORANGE:(theme==="dark"?"rgba(255,255,255,0.15)":"rgba(0,0,0,0.12)") }}/>
                       <span style={{ fontSize:13, color: s.status==="completed"?tk.text:tk.muted, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{s.task_title||s.task}</span>
@@ -1689,9 +1644,6 @@ useEffect(() => {
                       <span style={{ fontSize:11, fontFamily:"'JetBrains Mono',monospace", color: s.status==="completed"?"rgba(249,115,22,0.7)":tk.subtle }}>
                         {String(s.duration_minutes||25).padStart(2,"0")}:00
                       </span>
-                      <span style={{ fontSize:10, fontFamily:"'JetBrains Mono',monospace", color:tk.subtle, display:"none" }} className="sm:block">
-                        {s.completed_at ? new Date(s.completed_at).toLocaleTimeString(lang==="fr"?"fr-FR":"en-US",{hour:"2-digit",minute:"2-digit"}) : ""}
-                      </span>
                     </div>
                   </div>
                 ))}
@@ -1699,27 +1651,20 @@ useEffect(() => {
             )}
           </div>
 
-          {/* Cloud CTA */}
-          <button onClick={()=>setShowCloud(true)} style={{
-            width:"100%", display:"flex", alignItems:"center", justifyContent:"space-between",
-            padding:"16px 20px", borderRadius:16,
-            background:tk.card, border:`1px solid ${tk.border}`, cursor:"pointer", transition:"transform 0.2s",
-          }}>
+          <button onClick={()=>setShowCloud(true)} style={{ width:"100%", display:"flex", alignItems:"center", justifyContent:"space-between", padding:"16px 20px", borderRadius:16, background:tk.card, border:`1px solid ${tk.border}`, cursor:"pointer", transition:"transform 0.2s" }}>
             <div style={{ display:"flex", alignItems:"center", gap:12 }}>
               <div style={{ width:32, height:32, borderRadius:10, display:"flex", alignItems:"center", justifyContent:"center", background:"rgba(249,115,22,0.08)", border:"1px solid rgba(249,115,22,0.15)" }}>
                 {user?<Wifi size={13} style={{color:GREEN}}/>:<Cloud size={13} style={{color:ORANGE}}/>}
               </div>
               <span style={{ fontSize:13, color:tk.muted }}>{user?`${t.loggedAs} ${user.email}`:t.cloudBanner}</span>
             </div>
-            <div style={{ display:"flex", alignItems:"center", gap:6, padding:"7px 14px", borderRadius:10, fontSize:11, fontWeight:600, color:"#fff", flexShrink:0,
-              background: user?`linear-gradient(140deg,${GREEN},#059669)`:`linear-gradient(140deg,${ORANGE},${RED})` }}>
+            <div style={{ display:"flex", alignItems:"center", gap:6, padding:"7px 14px", borderRadius:10, fontSize:11, fontWeight:600, color:"#fff", flexShrink:0, background: user?`linear-gradient(140deg,${GREEN},#059669)`:`linear-gradient(140deg,${ORANGE},${RED})` }}>
               {user?t.logout:t.saveCloud}<ChevronRight size={11}/>
             </div>
           </button>
         </main>
       )}
 
-      {/* Bottom label */}
       {mode!=="stats" && (
         <div style={{ ...dimStyle(), textAlign:"center", paddingBottom:20, zIndex:10, position:"relative" }}>
           <span style={{ fontSize:9, fontWeight:600, letterSpacing:"0.2em", textTransform:"uppercase", color:tk.subtle }}>
@@ -1728,19 +1673,13 @@ useEffect(() => {
         </div>
       )}
 
-      {/* Modals */}
-{showCloud && (
-  <CloudModal
-    onClose={() => { setShowCloud(false); setResetToken(null); }}
-    t={t}
-    lang={lang}
-    tk={tk}
-    onAuth={handleAuth}
-    user={user}
-    token={token}
-    recoveryToken={resetToken}
-  />
-)}
+      {showCloud && (
+        <CloudModal
+          onClose={() => { setShowCloud(false); setResetToken(null); }}
+          t={t} lang={lang} tk={tk} onAuth={handleAuth}
+          user={user} token={token} recoveryToken={resetToken}
+        />
+      )}
       <Toasts list={toasts}/>
     </div>
   );
@@ -1749,75 +1688,27 @@ useEffect(() => {
 // ─────────────────────────────────────────────
 // SUB-COMPONENTS
 // ─────────────────────────────────────────────
-const TaskInput = ({ value, onChange, onBlur, placeholder, tk, error, errorMsg, ref: _ }) => {
-  const inputRef = useRef(null);
+function CtrlBtn({ onClick, children, tk }: any) {
   return (
-    <div>
-      <div style={{ position:"relative" }}>
-        <input ref={inputRef} type="text" value={value}
-          onChange={e => onChange(e.target.value)}
-          onBlur={onBlur}
-          placeholder={placeholder}
-          style={{
-            width:"100%", background:"transparent", border:"none",
-            borderBottom:`1px solid ${error?"#ef4444":"rgba(255,255,255,0.1)"}`,
-            outline:"none", textAlign:"center", fontSize:13, paddingBottom:10,
-            color: value?"#fafafa":"rgba(255,255,255,0.3)",
-            fontFamily:"'Inter',sans-serif", letterSpacing:"0.02em",
-            caretColor:ORANGE, transition:"border-color 0.2s",
-          }}
-          onFocus={e => { if (!error) e.target.style.borderBottomColor="rgba(249,115,22,0.45)"; }}
-          onBlurCapture={e => { if (!error) e.target.style.borderBottomColor="rgba(255,255,255,0.1)"; }}
-        />
-      </div>
-      <div style={{ display:"flex", alignItems:"center", justifyContent:"center", gap:5, marginTop:5, opacity: error?1:0, height:14, transition:"opacity 0.2s" }}>
-        <AlertCircle size={10} style={{ color:"#ef4444" }}/>
-        <span style={{ fontSize:10, color:"#ef4444" }}>{errorMsg}</span>
-      </div>
-    </div>
-  );
-};
-
-function CtrlBtn({ onClick, children, tk }) {
-  return (
-    <button onClick={onClick} style={{
-      width:44, height:44, borderRadius:"50%",
-      display:"flex", alignItems:"center", justifyContent:"center",
-      background:tk.card, border:`1px solid ${tk.border}`, color:tk.muted,
-      cursor:"pointer", transition:"transform 0.15s, opacity 0.15s", flexShrink:0,
-    }}>
+    <button onClick={onClick} style={{ width:44, height:44, borderRadius:"50%", display:"flex", alignItems:"center", justifyContent:"center", background:tk.card, border:`1px solid ${tk.border}`, color:tk.muted, cursor:"pointer", transition:"transform 0.15s, opacity 0.15s", flexShrink:0 }}>
       {children}
     </button>
   );
 }
 
-function SoundCard({ activeSound, toggleSound, volume, setVolume, tk, t }) {
+function SoundCard({ activeSound, toggleSound, volume, setVolume, tk, t }: any) {
   const isSilence = activeSound === null;
   return (
-    <div style={{
-      borderRadius:18, padding:16,
-      background:"rgba(249,115,22,0.04)",
-      border:"1px solid rgba(249,115,22,0.12)",
-    }}>
+    <div style={{ borderRadius:18, padding:16, background:"rgba(249,115,22,0.04)", border:"1px solid rgba(249,115,22,0.12)" }}>
       <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:12 }}>
         {activeSound ? <Volume2 size={11} style={{color:ORANGE}}/> : <VolumeX size={11} style={{color:"rgba(249,115,22,0.45)"}}/>}
         <span style={{ fontSize:9, fontWeight:600, letterSpacing:"0.25em", textTransform:"uppercase", color:"rgba(249,115,22,0.5)" }}>{t.sound}</span>
         {activeSound && <span style={{ marginLeft:"auto", fontSize:9, color:"rgba(249,115,22,0.65)", fontFamily:"'JetBrains Mono',monospace" }}>{t.playing}</span>}
       </div>
-
       <div style={{ display:"flex", gap:6, marginBottom: activeSound ? 12 : 0 }}>
-        {/* Silence / Off */}
-        <button onClick={() => toggleSound(null)} style={{
-          flex:1, display:"flex", flexDirection:"column", alignItems:"center", gap:6,
-          padding:"12px 4px", borderRadius:12, fontSize:10, fontWeight:500,
-          background: isSilence ? "rgba(249,115,22,0.12)" : "rgba(249,115,22,0.03)",
-          border: isSilence ? "1px solid rgba(249,115,22,0.35)" : "1px solid rgba(249,115,22,0.1)",
-          color: isSilence ? ORANGE : "rgba(249,115,22,0.38)",
-          cursor:"pointer", transition:"all 0.2s",
-        }}>
+        <button onClick={() => toggleSound(null)} style={{ flex:1, display:"flex", flexDirection:"column", alignItems:"center", gap:6, padding:"12px 4px", borderRadius:12, fontSize:10, fontWeight:500, background: isSilence ? "rgba(249,115,22,0.12)" : "rgba(249,115,22,0.03)", border: isSilence ? "1px solid rgba(249,115,22,0.35)" : "1px solid rgba(249,115,22,0.1)", color: isSilence ? ORANGE : "rgba(249,115,22,0.38)", cursor:"pointer", transition:"all 0.2s" }}>
           <VolumeX size={14}/>{t.silence || "Off"}
         </button>
-
         {[
           { id:"rain",       label:t.rain,  Icon:CloudRain },
           { id:"whitenoise", label:t.noise, Icon:Wind      },
@@ -1825,20 +1716,12 @@ function SoundCard({ activeSound, toggleSound, volume, setVolume, tk, t }) {
         ].map(({ id, label, Icon }) => {
           const active = activeSound === id;
           return (
-            <button key={id} onClick={() => toggleSound(id)} style={{
-              flex:1, display:"flex", flexDirection:"column", alignItems:"center", gap:6,
-              padding:"12px 4px", borderRadius:12, fontSize:10, fontWeight:500,
-              background: active ? "rgba(249,115,22,0.12)" : "rgba(249,115,22,0.03)",
-              border: active ? "1px solid rgba(249,115,22,0.35)" : "1px solid rgba(249,115,22,0.1)",
-              color: active ? ORANGE : "rgba(249,115,22,0.38)",
-              cursor:"pointer", transition:"all 0.2s",
-            }}>
+            <button key={id} onClick={() => toggleSound(id)} style={{ flex:1, display:"flex", flexDirection:"column", alignItems:"center", gap:6, padding:"12px 4px", borderRadius:12, fontSize:10, fontWeight:500, background: active ? "rgba(249,115,22,0.12)" : "rgba(249,115,22,0.03)", border: active ? "1px solid rgba(249,115,22,0.35)" : "1px solid rgba(249,115,22,0.1)", color: active ? ORANGE : "rgba(249,115,22,0.38)", cursor:"pointer", transition:"all 0.2s" }}>
               <Icon size={14}/>{label}
             </button>
           );
         })}
       </div>
-
       {activeSound && (
         <div style={{ display:"flex", alignItems:"center", gap:10 }}>
           <VolumeX size={10} style={{ color:"rgba(249,115,22,0.35)", flexShrink:0 }}/>
@@ -1853,7 +1736,7 @@ function SoundCard({ activeSound, toggleSound, volume, setVolume, tk, t }) {
   );
 }
 
-function EmptyChart({ tk, t, small }) {
+function EmptyChart({ tk, t, small }: any) {
   return (
     <div style={{ display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:8, padding: small?"20px 0":"40px 0", opacity:0.5 }}>
       <TrendingUp size={small?18:22} style={{ color:tk.subtle }}/>
