@@ -129,16 +129,16 @@ class AudioEngine {
   constructor() { this.ctx = null; this.nodes = {}; this.active = null; }
 
   // Retourne une Promise qui se résout seulement quand le contexte tourne vraiment
-  unlock() {
-    if (!this.ctx) this.ctx = new (window.AudioContext || window.webkitAudioContext)();
-    const buf = this.ctx.createBuffer(1, 1, 22050);
-    const src = this.ctx.createBufferSource();
-    src.buffer = buf;
-    src.connect(this.ctx.destination);
-    src.start(0);
-    if (this.ctx.state === "running") return Promise.resolve(this.ctx);
-    return this.ctx.resume().then(() => this.ctx).catch(() => this.ctx);
-  }
+unlock() {
+  unlockHtmlAudioSession(); // ← ajouté
+  if (!this.ctx) this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+  if (this.ctx.state !== "running") this.ctx.resume();
+  const buf = this.ctx.createBuffer(1, 1, 22050);
+  const src = this.ctx.createBufferSource();
+  src.buffer = buf;
+  src.connect(this.ctx.destination);
+  src.start(0);
+}
 
   _noise(hipass = 0, lopass = 22000, gain = 0.25) {
     const buf  = this.ctx.createBuffer(1, this.ctx.sampleRate * 3, this.ctx.sampleRate);
@@ -238,7 +238,17 @@ class AudioEngine {
 }
 
 const audio = new AudioEngine();
-
+// ── Débloque la catégorie audio "playback" (contourne le switch silencieux sur iPhone)
+let htmlAudioUnlocked = false;
+function unlockHtmlAudioSession() {
+  if (htmlAudioUnlocked) return;
+  htmlAudioUnlocked = true;
+  const el = document.createElement("audio");
+  el.src = "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=";
+  el.loop = true;
+  el.volume = 0.01; // quasi muet mais "actif" pour le système
+  el.play().catch(() => {});
+}
 // ─────────────────────────────────────────────
 // CONSTANTS
 // ─────────────────────────────────────────────
