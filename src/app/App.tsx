@@ -129,6 +129,9 @@ class AudioEngine {
   constructor() { this.ctx = null; this.nodes = {}; this.active = null; }
 
   unlock() {
+      if ("audioSession" in navigator) {
+    try { navigator.audioSession.type = "playback"; } catch (_) {}
+  }
     if (!this.ctx) this.ctx = new (window.AudioContext || window.webkitAudioContext)();
     const buf = this.ctx.createBuffer(1, 1, 22050);
     const src = this.ctx.createBufferSource();
